@@ -50,8 +50,16 @@ RUN apt-get update -qq && \
       git && \
     rm -rf /var/lib/apt/lists/*
 
-# Install uv (fast resolver/installer). Pinned to a known-good release.
-COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /uvx /usr/local/bin/
+# Install uv (fast resolver/installer). Pinned by digest to the 0.11.15
+# release. Using ghcr.io/astral-sh/uv@sha256:... rather than :tag because
+# the tag is mutable. Earlier 0.8.x versions are affected by three
+# published advisories in archive extraction:
+#   GHSA-7j9j-68r2-f35q  tar sdist path traversal       (patched 0.8.22)
+#   CVE-2025-13327       ZIP install differential       (patched 0.9.6)
+#   GHSA-w476-p2h3-79g9  PAX tar size differential      (patched 0.9.5)
+# 0.11.15 is the latest stable that has been published >=7 days
+# (matches the dependency-cooldown applied to requirements.txt).
+COPY --from=ghcr.io/astral-sh/uv@sha256:e590846f4776907b254ac0f44b5b380347af5d90d668138ca7938d1b0c2f98d3 /uv /uvx /usr/local/bin/
 
 WORKDIR /build
 

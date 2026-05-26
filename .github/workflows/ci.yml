@@ -20,28 +20,38 @@ jobs:
         with:
           persist-credentials: false
 
+      # Linter images are pinned by content-addressed digest (not by mutable
+      # `:stable` / `:latest` tag) so a registry-side tag re-point cannot
+      # silently change what runs in CI. To bump: `docker pull <repo>:<tag>
+      # && docker inspect <repo>:<tag> --format='{{index .RepoDigests 0}}'`.
+
       - name: shellcheck (entrypoint.sh)
+        # koalaman/shellcheck:stable
         run: |
           docker run --rm -v "${PWD}":/repo --workdir /repo \
-            koalaman/shellcheck:stable \
+            koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d \
             -x -S style \
             entrypoint.sh
 
       - name: hadolint (Dockerfile)
+        # hadolint/hadolint:latest-debian
         run: |
-          docker run --rm -i hadolint/hadolint:latest-debian \
+          docker run --rm -i hadolint/hadolint@sha256:158cd0184dcaa18bd8ec20b61f4c1cabdf8b32a592d062f57bdcb8e4c1d312e2 \
             < Dockerfile
 
       - name: actionlint (workflows + action.yml)
+        # rhysd/actionlint:latest
         run: |
           docker run --rm -v "${PWD}":/repo --workdir /repo \
-            rhysd/actionlint:latest -color
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
 
-      - name: yamllint
+      - name: yamllint (all repo YAML)
+        # cytopia/yamllint:latest. Pass `.` so any newly-added .yaml/.yml
+        # is covered automatically (including .yamllint.yml + .checkov.yaml).
         run: |
-          docker run --rm -v "${PWD}":/data cytopia/yamllint:latest \
+          docker run --rm -v "${PWD}":/data cytopia/yamllint@sha256:3e9eb827ab2b12a5ea5f49d4257bb3aca94bba9f1ba427c8bc7f2456385a5204 \
             -c /data/.yamllint.yml \
-            .github/workflows action.yml .github/dependabot.yml
+            .
 
   build:
     name: Docker build smoke
