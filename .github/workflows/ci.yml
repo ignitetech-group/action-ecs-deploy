@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Avoid running redundant parallel pipelines on rapid PR pushes. Each new
+# commit on a PR (or a force-push) cancels in-flight runs for the same ref
+# and supersedes them. Using `github.head_ref` for PRs (the source branch)
+# and falling back to `github.ref` for direct pushes to `main` so PR runs
+# don't cancel main-branch runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        # actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      # Linter images are pinned by content-addressed digest (not by mutable
+      # `:stable` / `:latest` tag) so a registry-side tag re-point cannot
+      # silently change what runs in CI. To bump: `docker pull <repo>:<tag>
+      # && docker inspect <repo>:<tag> --format='{{index .RepoDigests 0}}'`.
+
+      - name: shellcheck (entrypoint.sh)
+        # koalaman/shellcheck:stable
+        run: |
+          docker run --rm -v "${PWD}":/repo --workdir /repo \
+            koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d \
+            -x -S style \
+            entrypoint.sh
+
+      - name: hadolint (Dockerfile)
+        # hadolint/hadolint:latest-debian
+        run: |
+          docker run --rm -i hadolint/hadolint@sha256:158cd0184dcaa18bd8ec20b61f4c1cabdf8b32a592d062f57bdcb8e4c1d312e2 \
+            < Dockerfile
+
+      - name: actionlint (workflows + action.yml)
+        # rhysd/actionlint:latest
+        run: |
+          docker run --rm -v "${PWD}":/repo --workdir /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+      - name: yamllint (all repo YAML)
+        # cytopia/yamllint:latest. Pass `.` so any newly-added .yaml/.yml
+        # is covered automatically (including .yamllint.yml + .checkov.yaml).
+        run: |
+          docker run --rm -v "${PWD}":/data cytopia/yamllint@sha256:3e9eb827ab2b12a5ea5f49d4257bb3aca94bba9f1ba427c8bc7f2456385a5204 \
+            -c /data/.yamllint.yml \
+            .
+
+  build:
+    name: Docker build smoke
+    runs-on: ubuntu-24.04-arm
+    needs: [lint]
+    steps:
+      - name: Checkout
+        # actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Build action image
+        run: docker build -t action-ecs-deploy:ci .
+
+      - name: Smoke - ecs --version inside built image
+        run: |
+          docker run --rm --entrypoint ecs action-ecs-deploy:ci --version
+
+      - name: Smoke - runtime user is non-root (uid 1001)
+        run: |
+          uid_line=$(docker run --rm --entrypoint id action-ecs-deploy:ci)
+          echo "$uid_line"
+          if ! echo "$uid_line" | grep -q "uid=1001(app)"; then
+            echo "[FAIL] runtime user is not uid=1001(app)" >&2
+            exit 1
+          fi
+          echo "[OK] runtime user is uid=1001(app)"
+
+      - name: Smoke - entrypoint rejects missing required input
+        run: |
+          if docker run --rm action-ecs-deploy:ci; then
+            echo "[FAIL] entrypoint accepted empty inputs (expected non-zero)" >&2
+            exit 1
+          fi
+          echo "[OK] entrypoint correctly rejected empty inputs"
+
+      - name: Smoke - entrypoint rejects unknown action
+        run: |
+          if docker run --rm \
+              -e INPUT_ACTION=destroy \
+              -e INPUT_CLUSTER=c \
+              -e INPUT_TARGET=t \
+              action-ecs-deploy:ci; then
+            echo "[FAIL] entrypoint accepted unknown action 'destroy'" >&2
+            exit 1
+          fi
+          echo "[OK] entrypoint correctly rejected unknown action"
+
+      - name: Smoke - shell-injection regression (invariant 5)
+        run: |
+          # If eval were ever reintroduced into entrypoint.sh, the subshell
+          # in INPUT_CLUSTER below would execute and create /tmp/PWNED.
+          # We invoke entrypoint.sh inside the container and assert the
+          # marker file does NOT exist afterwards.
+          docker run --rm \
+            -e INPUT_ACTION=deploy \
+            -e 'INPUT_CLUSTER=$(touch /tmp/PWNED)' \
+            -e INPUT_TARGET=service \
+            --entrypoint sh \
+            action-ecs-deploy:ci \
+            -c '
+              /entrypoint.sh 2>/dev/null || true
+              if [ -e /tmp/PWNED ]; then
+                echo "[FAIL] shell injection succeeded - /tmp/PWNED was created" >&2
+                exit 1
+              fi
+              echo "[OK] no shell injection - /tmp/PWNED was NOT created"
+            '

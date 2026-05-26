@@ -18,22 +18,36 @@ inputs:
     description: 'Applicable to the deploy and cron actions. Changes the tag of all images in all containers in the task definition to the tag given'
     required: false
   image:
-    description: 'Applicable to the deploy and cron actions. Updates the image of a specific container. Pass the value as "[container-name] [image-name]:[image-tag]". You can pass multiple values as comma-separated'
+    description: >-
+      Applicable to the deploy and cron actions. Updates the image of a specific
+      container. Pass the value as "[container-name] [image-name]:[image-tag]".
+      You can pass multiple values as comma-separated.
     required: false
   task:
-    description: 'Applicable to the deploy action. Updates the target service with a new task definition, which can either be an ARN, a family name with revision, or just a family name (you will get the most recent revision)'
+    description: >-
+      Applicable to the deploy action. Updates the target service with a new
+      task definition, which can either be an ARN, a family name with revision,
+      or just a family name (you will get the most recent revision).
     required: false
   rule:
     description: 'Applicable to the cron action. Updates the scheduled task rule with a new task definition'
     required: false
   env_vars:
-    description: 'Set one or more environment variables. The syntax is "[container] [ENV_VAR_NAME] [ENV_VAR_VALUE]". You can set multiple env vars by comma-separating them as "[container] [ENV_VAR_NAME] [ENV_VAR_VALUE], [container] [ANOTHER_ENV_VAR_NAME] [ANOTHER_ENV_VAR_VALUE]"'
+    description: >-
+      Set one or more environment variables. The syntax is
+      "[container] [ENV_VAR_NAME] [ENV_VAR_VALUE]". You can set multiple env
+      vars by comma-separating them as
+      "[container] [ENV_VAR_NAME] [ENV_VAR_VALUE], [container] [ANOTHER_ENV_VAR_NAME] [ANOTHER_ENV_VAR_VALUE]".
     required: false
   exclusive_env:
     description: 'To reset all existing environment variables of a task definition. Set to "true" to enable'
     required: false
   secrets:
-    description: 'Set one or more secrets from parameter store or secrets manager. The syntax is "[container] [SECRET_NAME] [SECRET_ARN]". You can set multiple env vars by comma-separating them as "[container] [SECRET_NAME] [SECRET_ARN], [container] [ANOTHER_SECRET_NAME] [ANOTHER_SECRET_ARN]"'
+    description: >-
+      Set one or more secrets from parameter store or secrets manager. The
+      syntax is "[container] [SECRET_NAME] [SECRET_ARN]". You can set multiple
+      secrets by comma-separating them as
+      "[container] [SECRET_NAME] [SECRET_ARN], [container] [ANOTHER_SECRET_NAME] [ANOTHER_SECRET_ARN]".
     required: false
   exclusive_secrets:
     description: 'To reset all existing secrets (secret environment variables) of a task definition. Set to "true" to enable'

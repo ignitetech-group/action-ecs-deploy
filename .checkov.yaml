@@ -1,0 +1,7 @@
+# Checkov configuration. This repo has no Terraform / IaC, so checkov scans
+# only the Dockerfile + GitHub workflows. Skips below are documented
+# dismissals with rationale — do NOT skip new checks here without writing
+# the reason.
+
+quiet: true
+compact: true
