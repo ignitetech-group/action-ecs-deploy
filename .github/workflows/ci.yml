@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        # actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: shellcheck (entrypoint.sh)
+        run: |
+          docker run --rm -v "${PWD}":/repo --workdir /repo \
+            koalaman/shellcheck:stable \
+            -x -S style \
+            entrypoint.sh
+
+      - name: hadolint (Dockerfile)
+        run: |
+          docker run --rm -i hadolint/hadolint:latest-debian \
+            < Dockerfile
+
+      - name: actionlint (workflows + action.yml)
+        run: |
+          docker run --rm -v "${PWD}":/repo --workdir /repo \
+            rhysd/actionlint:latest -color
+
+      - name: yamllint
+        run: |
+          docker run --rm -v "${PWD}":/data cytopia/yamllint:latest \
+            -c /data/.yamllint.yml \
+            .github/workflows action.yml .github/dependabot.yml
+
+  build:
+    name: Docker build smoke
+    runs-on: ubuntu-24.04-arm
+    needs: [lint]
+    steps:
+      - name: Checkout
+        # actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Build action image
+        run: docker build -t action-ecs-deploy:ci .
+
+      - name: Smoke - ecs --version inside built image
+        run: |
+          docker run --rm --entrypoint ecs action-ecs-deploy:ci --version
+
+      - name: Smoke - runtime user is non-root (uid 1001)
+        run: |
+          uid_line=$(docker run --rm --entrypoint id action-ecs-deploy:ci)
+          echo "$uid_line"
+          if ! echo "$uid_line" | grep -q "uid=1001(app)"; then
+            echo "[FAIL] runtime user is not uid=1001(app)" >&2
+            exit 1
+          fi
+          echo "[OK] runtime user is uid=1001(app)"
+
+      - name: Smoke - entrypoint rejects missing required input
+        run: |
+          if docker run --rm action-ecs-deploy:ci; then
+            echo "[FAIL] entrypoint accepted empty inputs (expected non-zero)" >&2
+            exit 1
+          fi
+          echo "[OK] entrypoint correctly rejected empty inputs"
+
+      - name: Smoke - entrypoint rejects unknown action
+        run: |
+          if docker run --rm \
+              -e INPUT_ACTION=destroy \
+              -e INPUT_CLUSTER=c \
+              -e INPUT_TARGET=t \
+              action-ecs-deploy:ci; then
+            echo "[FAIL] entrypoint accepted unknown action 'destroy'" >&2
+            exit 1
+          fi
+          echo "[OK] entrypoint correctly rejected unknown action"
+
+      - name: Smoke - shell-injection regression (invariant 5)
+        run: |
+          # If eval were ever reintroduced into entrypoint.sh, the subshell
+          # in INPUT_CLUSTER below would execute and create /tmp/PWNED.
+          # We invoke entrypoint.sh inside the container and assert the
+          # marker file does NOT exist afterwards.
+          docker run --rm \
+            -e INPUT_ACTION=deploy \
+            -e 'INPUT_CLUSTER=$(touch /tmp/PWNED)' \
+            -e INPUT_TARGET=service \
+            --entrypoint sh \
+            action-ecs-deploy:ci \
+            -c '
+              /entrypoint.sh 2>/dev/null || true
+              if [ -e /tmp/PWNED ]; then
+                echo "[FAIL] shell injection succeeded - /tmp/PWNED was created" >&2
+                exit 1
+              fi
+              echo "[OK] no shell injection - /tmp/PWNED was NOT created"
+            '

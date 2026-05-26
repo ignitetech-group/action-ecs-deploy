@@ -1,0 +1,38 @@
+# Tool configuration for ignitetech-group/action-ecs-deploy.
+#
+# This repo has no Python source code — `entrypoint.sh` is bash. This file
+# exists primarily to:
+#   1. document the Python toolchain version we resolve dependencies
+#      against (used by `uv pip compile` for requirements.txt generation)
+#   2. provide ruff/pyright config IF a future change introduces helper
+#      Python scripts (e.g. under scripts/), so they pass the same gates
+#      our sister forks use
+#
+# Refer to AGENTS.md for the full quality-gate workflow.
+
+[project]
+name = "action-ecs-deploy-meta"
+version = "0.0.0"
+description = "Meta-project for tool configuration. Not published, not installable."
+requires-python = ">=3.13"
+
+# ─── ruff (lint + format, only if Python code lands in this repo) ─────────
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+extend-exclude = [".venv", "venv"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "SIM", "ARG", "S"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ─── pyright (static types, only if Python code lands in this repo) ───────
+[tool.pyright]
+include = ["scripts"]
+exclude = ["**/__pycache__", ".venv", "venv"]
+pythonVersion = "3.13"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = "none"

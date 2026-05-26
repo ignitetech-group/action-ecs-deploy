@@ -1,187 +1,234 @@
-#!/bin/sh -l
+#!/usr/bin/env bash
+#
+# Entrypoint for ignitetech-group/action-ecs-deploy.
+#
+# Translates the action's INPUT_* environment variables (set by the GitHub
+# Actions runner from inputs in action.yml) into a properly-quoted argv
+# invocation of the ecs CLI from ignitetech-group/ecs-deploy (a
+# security-hardened fork of fabfuel/ecs-deploy, installed via pip from a
+# pinned commit SHA in the Dockerfile).
+#
+# Security note: the upstream donaldpiret/ecs-deploy entrypoint built a single
+# command string from unsanitized INPUT_* values and ran it through `eval`,
+# which is a textbook shell-injection vector (an attacker controlling any
+# input could execute arbitrary code in the runner). This rewrite eliminates
+# eval entirely: every input either becomes a discrete element of an argv
+# array, is validated against a whitelist, or is checked to be a numeric
+# value. The final invocation is `exec "${cmd[@]}"`, which never reparses
+# argv as shell.
 
-set -e o pipefail
+set -Eeuo pipefail
 
-# Validate input
-[ -z "$INPUT_ACTION" ] && (echo "Missing action" && exit 1)
-[ -z "$INPUT_CLUSTER" ] && (echo "Missing Cluster Name" && exit 1)
-[ -z "$INPUT_TARGET" ] && (echo "Missing target" && exit 1)
+on_error() {
+  local rc=$?
+  echo "[ERROR] entrypoint.sh failed at line ${BASH_LINENO[0]} (rc=${rc})" >&2
+}
+trap on_error ERR
 
-TIMEOUT=${INPUT_TIMEOUT:-300}
+# ---------------------------------------------------------------------------
+# Input validation helpers
+# ---------------------------------------------------------------------------
 
-CMD="ecs ${INPUT_ACTION} ${INPUT_CLUSTER} ${INPUT_TARGET}"
+# Validate that ${value} is one of the space-separated tokens in ${allowed}.
+# Usage: validate_choice "input_name" "$value" "deploy cron scale run update"
+validate_choice() {
+  local name="$1"
+  local value="$2"
+  local allowed="$3"
+  local a
+  for a in ${allowed}; do
+    if [[ "${value}" == "${a}" ]]; then
+      return 0
+    fi
+  done
+  echo "[ERROR] input '${name}' must be one of: ${allowed} (got: '${value}')" >&2
+  exit 1
+}
 
-## Deploy function
-deploy_action() {
-  if [ -n "$INPUT_TAG" ]; then # Deploying a specific tag
-    CMD="${CMD} -t ${INPUT_TAG}"
-  elif [ -n "$INPUT_IMAGE" ]; then # Deploying one or more images
-    rest=$INPUT_IMAGE
-    while [ -n "$rest" ] ; do
-      str=${rest%%,*}  # Everything up to the first ','
-      # Trim up to the first ',' -- and handle final case, too.
-      [ "$rest" = "${rest/,/}" ] && rest= || rest=${rest#*,}
-
-      CMD="${CMD} -i $str"
-    done
-  elif [ -n "$INPUT_TASK" ]; then # Deploying a specific task definition
-    CMD="${CMD} --task ${INPUT_TASK}"
+# Validate that ${value} is a (possibly negative) base-10 integer.
+# Usage: validate_int "input_name" "$value"
+validate_int() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "${value}" =~ ^-?[0-9]+$ ]]; then
+    echo "[ERROR] input '${name}' must be an integer (got: '${value}')" >&2
+    exit 1
   fi
 }
 
-## Cron function
-cron_action() {
-  [ -z "$INPUT_RULE" ] && (echo "Missing rule" && exit 1)
-
-  CMD="${CMD} ${INPUT_RULE}"
-
-  if [ -n "$INPUT_TAG" ]; then # Deploying a specific tag
-    CMD="${CMD} -t ${INPUT_TAG}"
-  elif [ -n "$INPUT_IMAGE" ]; then # Deploying one or more images
-    rest=$INPUT_IMAGE
-    while [ -n "$rest" ] ; do
-      str=${rest%%,*}  # Everything up to the first ','
-      # Trim up to the first ',' -- and handle final case, too.
-      [ "$rest" = "${rest/,/}" ] && rest= || rest=${rest#*,}
-
-      CMD="${CMD} -i $str"
-    done
+# Tokenize a shell-quoted whitespace-separated string into one token per
+# line, respecting single/double quotes WITHOUT executing anything. We pipe
+# through xargs(1) which performs the same word-splitting your shell does
+# but only invokes printf to echo each token back out.
+#
+# Usage:
+#   readarray -t parts < <(tokenize_field "$value")
+tokenize_field() {
+  local trimmed="${1#"${1%%[![:space:]]*}"}"
+  trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+  if [[ -z "${trimmed}" ]]; then
+    return 0
   fi
+  printf '%s\n' "${trimmed}" | xargs -n1 printf '%s\n'
 }
 
-## Scale function
-scale_action() {
-  [ -z "$INPUT_SCALE_VALUE" ] && (echo "Missing scale value" && exit 1)
-  CMD="${CMD} ${INPUT_SCALE_VALUE}"
+# Append repeated --flag arguments to ${cmd} for each comma-separated chunk
+# of ${raw}. Each chunk must tokenize to exactly ${expected_n} whitespace-
+# separated tokens. Empty ${raw} is a no-op.
+#
+# Example: append_multi -i "webserver nginx:1.11.8, application my-app:1.2.3" 2
+#   adds: -i webserver nginx:1.11.8 -i application my-app:1.2.3
+append_multi() {
+  local flag="$1"
+  local raw="$2"
+  local expected_n="$3"
+  if [[ -z "${raw}" ]]; then
+    return 0
+  fi
+  local IFS=','
+  local -a chunks
+  read -ra chunks <<< "${raw}"
+  unset IFS
+
+  local chunk
+  local -a parts
+  for chunk in "${chunks[@]}"; do
+    readarray -t parts < <(tokenize_field "${chunk}")
+    if [[ "${#parts[@]}" -ne "${expected_n}" ]]; then
+      echo "[ERROR] each '${flag}' value must contain exactly ${expected_n} whitespace-separated tokens (got ${#parts[@]} from chunk: '${chunk}')" >&2
+      exit 1
+    fi
+    cmd+=("${flag}" "${parts[@]}")
+  done
 }
 
-## Run function
-run_action() {
-  CMD="${CMD}"
-}
+# ---------------------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------------------
 
-## Update function
-update_action() {
-  CMD="ecs update ${INPUT_TARGET}"
-  if [ -n "$INPUT_TAG" ]; then # Deploying a specific tag
-    CMD="${CMD} -t ${INPUT_TAG}"
-  elif [ -n "$INPUT_IMAGE" ]; then # Deploying one or more images
-    rest=$INPUT_IMAGE
-    while [ -n "$rest" ] ; do
-      str=${rest%%,*}  # Everything up to the first ','
-      # Trim up to the first ',' -- and handle final case, too.
-      [ "$rest" = "${rest/,/}" ] && rest= || rest=${rest#*,}
+ACTION="${INPUT_ACTION:-}"
+if [[ -z "${ACTION}" ]]; then
+  echo "[ERROR] input 'action' is required" >&2
+  exit 1
+fi
+validate_choice "action" "${ACTION}" "deploy cron scale run update"
 
-      CMD="${CMD} -i $str"
-    done
-  fi
-}
+CLUSTER="${INPUT_CLUSTER:-}"
+TARGET="${INPUT_TARGET:-}"
 
-append_common_vars() {
-  if [ -n "$INPUT_ENV_VARS" ]; then # Env vars
-    rest=$INPUT_ENV_VARS
-    while [ -n "$rest" ] ; do
-      str=${rest%%,*}  # Everything up to the first ','
-      # Trim up to the first ',' -- and handle final case, too.
-      [ "$rest" = "${rest/,/}" ] && rest= || rest=${rest#*,}
-
-      CMD="${CMD} -e $str"
-    done
-  fi
-
-  if [ "$INPUT_EXCLUSIVE_ENV" = "true" ]; then
-    CMD="${CMD} --exclusive-env"
-  fi
-
-  if [ -n "$INPUT_SECRETS" ]; then # Secrets
-    rest=$INPUT_SECRETS
-    while [ -n "$rest" ] ; do
-      str=${rest%%,*}  # Everything up to the first ','
-      # Trim up to the first ',' -- and handle final case, too.
-      [ "$rest" = "${rest/,/}" ] && rest= || rest=${rest#*,}
-
-      CMD="${CMD} -s $str"
-    done
-  fi
-
-  if [ "$INPUT_EXCLUSIVE_SECRETS" = "true" ]; then
-    CMD="${CMD} --exclusive-secrets"
-  fi
-
-  if [ -n "$INPUT_COMMAND" ]; then # Custom command
-    CMD="${CMD} --command ${INPUT_COMMAND}"
-  fi
-}
-
-append_deploy_vars() {
-  if [ -n "$INPUT_TASK_ROLE" ]; then # Task role
-    CMD="${CMD} -r ${INPUT_TASK_ROLE}"
-  fi
-
-  if [ "$INPUT_IGNORE_WARNINGS" = "true" ]; then
-    CMD="${CMD} --ignore-warnings"
-  fi
-
-  if [ "$INPUT_NO_DEREGISTER" = "true" ]; then
-    CMD="${CMD} --no-deregister"
-  fi
-
-  if [ "$INPUT_ROLLBACK" = "true" ]; then
-    CMD="${CMD} --rollback"
-  fi
-
-  if [ "$INPUT_ACTION" != "cron" ]; then
-    CMD="${CMD} --timeout ${TIMEOUT}"
-  fi
-}
-
-append_run_vars() {
-  if [ -n "$INPUT_LAUNCH_TYPE" ]; then # Launch Type
-    CMD="${CMD} --launchtype=${INPUT_LAUNCH_TYPE}"
-  fi
-
-  if [ -n "$INPUT_SECURITY_GROUP" ]; then # Security Group
-    CMD="${CMD} --securitygroup ${INPUT_SECURITY_GROUP}"
-  fi
-
-  if [ -n "$INPUT_SUBNET" ]; then # Subnet
-    CMD="${CMD} --subnet ${INPUT_SUBNET}"
-  fi
-
-  if [ "$INPUT_public_ip" = "true" ]; then
-    CMD="${CMD} --public-ip"
-  fi
-}
-
-case $INPUT_ACTION in
-deploy) # Deployment action
-  echo "Performing deploy"
-  deploy_action
-  append_common_vars
-  append_deploy_vars
-  ;;
-cron) # Cron action
-  echo "Performing cron"
-  cron_action
-  append_common_vars
-  append_deploy_vars
-  ;;
-scale) # Scaling action
-  echo "Performing scaling"
-  scale_action
-  ;;
-run) # Run action
-  echo "Performing run"
-  run_action
-  append_common_vars
-  append_run_vars
-  ;;
-update) # Update action
-  echo "Performing update"
-  update_action
-  append_common_vars
+# Build the base argv. ecs update only takes a task; everything else takes
+# cluster + service|task as positional arguments.
+declare -a cmd
+case "${ACTION}" in
+  update)
+    if [[ -z "${TARGET}" ]]; then
+      echo "[ERROR] input 'target' is required for action 'update'" >&2
+      exit 1
+    fi
+    cmd=(ecs update "${TARGET}")
+    ;;
+  *)
+    if [[ -z "${CLUSTER}" ]]; then
+      echo "[ERROR] input 'cluster' is required for action '${ACTION}'" >&2
+      exit 1
+    fi
+    if [[ -z "${TARGET}" ]]; then
+      echo "[ERROR] input 'target' is required for action '${ACTION}'" >&2
+      exit 1
+    fi
+    cmd=(ecs "${ACTION}" "${CLUSTER}" "${TARGET}")
+    ;;
 esac
 
-echo "Command run: ${CMD}"
+# Per-action positional / required arguments
+case "${ACTION}" in
+  cron)
+    if [[ -z "${INPUT_RULE:-}" ]]; then
+      echo "[ERROR] input 'rule' is required for action 'cron'" >&2
+      exit 1
+    fi
+    cmd+=("${INPUT_RULE}")
+    ;;
+  scale)
+    if [[ -z "${INPUT_SCALE_VALUE:-}" ]]; then
+      echo "[ERROR] input 'scale_value' is required for action 'scale'" >&2
+      exit 1
+    fi
+    validate_int "scale_value" "${INPUT_SCALE_VALUE}"
+    cmd+=("${INPUT_SCALE_VALUE}")
+    ;;
+esac
 
-eval "$CMD"
+# Optional shared flags. tag and image are mutually exclusive in the deploy
+# action per upstream behaviour, but we let the underlying ecs CLI enforce
+# that — passing both will surface a clear error from click.
+if [[ -n "${INPUT_TAG:-}" ]]; then
+  cmd+=(--tag "${INPUT_TAG}")
+fi
+
+append_multi -i "${INPUT_IMAGE:-}" 2
+append_multi -e "${INPUT_ENV_VARS:-}" 3
+append_multi -s "${INPUT_SECRETS:-}" 3
+
+# --task overrides the running task definition; only meaningful for actions
+# other than update (which already takes the task as a positional argument).
+if [[ -n "${INPUT_TASK:-}" && "${ACTION}" != "update" ]]; then
+  cmd+=(--task "${INPUT_TASK}")
+fi
+
+if [[ "${INPUT_EXCLUSIVE_ENV:-}" == "true" ]]; then
+  cmd+=(--exclusive-env)
+fi
+
+if [[ "${INPUT_EXCLUSIVE_SECRETS:-}" == "true" ]]; then
+  cmd+=(--exclusive-secrets)
+fi
+
+# --command takes 2 tokens per occurrence (container, command-string), and
+# the command-string itself may contain spaces (typically wrapped in double
+# quotes by the caller, e.g. `webserver "nginx -c /etc/nginx/nginx.conf"`).
+append_multi --command "${INPUT_COMMAND:-}" 2
+
+case "${ACTION}" in
+  deploy|cron)
+    if [[ -n "${INPUT_TASK_ROLE:-}" ]]; then
+      cmd+=(--role "${INPUT_TASK_ROLE}")
+    fi
+    if [[ "${INPUT_IGNORE_WARNINGS:-}" == "true" ]]; then
+      cmd+=(--ignore-warnings)
+    fi
+    if [[ "${INPUT_NO_DEREGISTER:-}" == "true" ]]; then
+      cmd+=(--no-deregister)
+    fi
+    if [[ "${INPUT_ROLLBACK:-}" == "true" ]]; then
+      cmd+=(--rollback)
+    fi
+    if [[ "${ACTION}" != "cron" ]]; then
+      timeout="${INPUT_TIMEOUT:-300}"
+      validate_int "timeout" "${timeout}"
+      cmd+=(--timeout "${timeout}")
+    fi
+    ;;
+  run)
+    if [[ -n "${INPUT_LAUNCH_TYPE:-}" ]]; then
+      validate_choice "launch_type" "${INPUT_LAUNCH_TYPE}" "EC2 FARGATE"
+      cmd+=(--launchtype "${INPUT_LAUNCH_TYPE}")
+    fi
+    if [[ -n "${INPUT_SECURITY_GROUP:-}" ]]; then
+      cmd+=(--securitygroup "${INPUT_SECURITY_GROUP}")
+    fi
+    if [[ -n "${INPUT_SUBNET:-}" ]]; then
+      cmd+=(--subnet "${INPUT_SUBNET}")
+    fi
+    # The original donaldpiret entrypoint checked $INPUT_public_ip (lowercase)
+    # which never matched: GitHub Actions converts input names to uppercase
+    # when building env vars, so the canonical name is INPUT_PUBLIC_IP. Honour
+    # both for backwards-compatibility, but document that this was a bug.
+    if [[ "${INPUT_PUBLIC_IP:-${INPUT_public_ip:-}}" == "true" ]]; then
+      cmd+=(--public-ip)
+    fi
+    ;;
+esac
+
+echo "Executing: $(printf '%q ' "${cmd[@]}")"
+exec "${cmd[@]}"
