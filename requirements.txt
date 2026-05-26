@@ -160,7 +160,7 @@ dictdiffer==0.9.0 \
     --hash=sha256:17bacf5fbfe613ccf1b6d512bd766e6b21fb798822a133aa86098b8ac9997578 \
     --hash=sha256:442bfc693cfcadaf46674575d2eba1c53b42f5e404218ca2c2ff549f2df56595
     # via ecs-deploy
-ecs-deploy @ git+https://github.com/ignitetech-group/ecs-deploy@935e33bd3ea78b4167c40f9ce4d4ab0c4bd4c6b7
+ecs-deploy @ git+https://github.com/ignitetech-group/ecs-deploy@9890ee4fb53cce5266705959e69b22d38b0e1120
     # via -r requirements.in
 idna==3.15 \
     --hash=sha256:048adeaf8c2d788c40fee287673ccaa74c24ffd8dcf09ffa555a2fbb59f10ac8 \

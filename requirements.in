@@ -24,4 +24,6 @@
 # To bump the fabfuel pin: replace the SHA below, re-run the compile
 # command, and review the resulting requirements.txt diff.
 
-ecs-deploy @ git+https://github.com/ignitetech-group/ecs-deploy@935e33bd3ea78b4167c40f9ce4d4ab0c4bd4c6b7
+# ignitetech-group/ecs-deploy @ release tag 2026.5
+# https://github.com/ignitetech-group/ecs-deploy/releases/tag/2026.5
+ecs-deploy @ git+https://github.com/ignitetech-group/ecs-deploy@9890ee4fb53cce5266705959e69b22d38b0e1120
