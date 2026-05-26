@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# Avoid running redundant parallel pipelines on rapid PR pushes. Each new
+# commit on a PR (or a force-push) cancels in-flight runs for the same ref
+# and supersedes them. Using `github.head_ref` for PRs (the source branch)
+# and falling back to `github.ref` for direct pushes to `main` so PR runs
+# don't cancel main-branch runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

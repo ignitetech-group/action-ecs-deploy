@@ -230,5 +230,24 @@ case "${ACTION}" in
     ;;
 esac
 
-echo "Executing: $(printf '%q ' "${cmd[@]}")"
+# Log a safe, structured summary of what's about to run. We deliberately
+# do NOT print the full argv: INPUT_ENV_VARS, INPUT_COMMAND, and (in
+# malformed-but-possible callers) other inputs can carry sensitive values,
+# and dumping them risks leaking secrets into workflow logs even with
+# GitHub's built-in mask-matching (which only catches values registered
+# via the `secrets` context, and only as exact byte sequences). Operators
+# who need full input visibility should consult the runner's input-echo
+# section at the top of the job, where GitHub's secret redaction applies.
+#
+# action / cluster / target are safe to log: action is whitelist-validated
+# (deploy|cron|scale|run|update), and cluster/target are AWS-infrastructure
+# identifiers that show up in CloudWatch / tagged-resource listings anyway.
+case "${ACTION}" in
+  update)
+    echo "Executing: ecs update '${TARGET}' (${#cmd[@]} argv tokens; option values redacted)"
+    ;;
+  *)
+    echo "Executing: ecs ${ACTION} cluster='${CLUSTER}' target='${TARGET}' (${#cmd[@]} argv tokens; option values redacted)"
+    ;;
+esac
 exec "${cmd[@]}"
